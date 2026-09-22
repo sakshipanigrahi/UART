@@ -4,6 +4,7 @@ Board: TI TM4C123GH6PM (Tiva C LaunchPad) + EduARM4 add-on board
 
 ## 1. What This Program Does (in plain words)
 
+
 This is the same LED blink program from Lab 3 — same LED, same 7-segment display, same two buttons — with one thing added: you can now also control it by **typing on the laptop and pressing Enter**, instead of only pressing the physical buttons.
 
 The laptop and the board talk to each other over a wire called **UART**. Think of it like a walkie-talkie: the laptop can send letters to the board, and the board can send letters back so you can read them on the laptop screen.
