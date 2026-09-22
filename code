@@ -1,0 +1,597 @@
+#include <stdint.h>
+#include <string.h>
+#include "inc/tm4c123gh6pm.h"
+
+/*
+=========================================================
+LAB 4
+
+SW1 = PF4
+SW2 = PF0
+
+RGB LED:
+PF1 = RED
+PF2 = BLUE
+PF3 = GREEN
+
+7-SEGMENT:
+PA4 = Digit 1
+PA5 = Digit 2
+PA6 = Digit 3
+PA7 = Digit 4
+PB0-PB7 = segments
+
+NORMAL SWITCH OPERATION:
+SW1 alone       -> SPEED
+SW2 alone       -> COLOUR
+SW1 + SW2       -> RUN / PAUSE
+
+UART (type the word, then press Enter):
+color / colour  -> next colour   (wraps, same as SW2)
+rate            -> next speed    (wraps, same as SW1)
+t               -> RUN / PAUSE
+h               -> HELP
+=========================================================
+*/
+
+/*=========================================================
+  7-SEGMENT CODES
+  ---------------------------------------------------------
+  Each byte below is a "segment map" for one digit (0-9).
+  A 7-segment digit is 7 LED bars (a,b,c,d,e,f,g), one per
+  bit on Port B. A '1' bit means "turn that bar's LED on".
+  Example: digitCode[1] = 0x06 = binary 00000110
+           -> only segments b and c light up -> looks like "1"
+=========================================================*/
+uint8_t digitCode[10] =
+{
+    0x3F,   /* 0 */
+    0x06,   /* 1 */
+    0x5B,   /* 2 */
+    0x4F,   /* 3 */
+    0x66,   /* 4 */
+    0x6D,   /* 5 */
+    0x7D,   /* 6 */
+    0x07,   /* 7 */
+    0x7F,   /* 8 */
+    0x6F    /* 9 */
+};
+
+#define SEG_P       0x73    /* looks like the letter "P" (Pause) */
+#define SEG_R       0x77    /* looks like the letter "r" (running) */
+#define SEG_S       0x6D    /* looks like the letter "S" (Speed label) */
+#define SEG_OFF     0x00    /* all segments off (blank digit) */
+
+/*=========================================================
+  DELAY
+=========================================================*/
+void delay(void)
+{
+    volatile uint32_t i;
+    for(i = 0; i < 1000; i++)
+    {
+        /* intentionally empty - just counting time */
+    }
+}
+
+/*=========================================================
+  TURN OFF ALL 7-SEGMENT DIGITS
+=========================================================*/
+void digitsOff(void)
+{
+    GPIO_PORTA_DATA_R &= ~0xF0;
+}
+
+/*=========================================================
+  SHOW ONE DIGIT
+=========================================================*/
+void showDigit(uint8_t digit, uint8_t pattern)
+{
+    digitsOff();
+
+    GPIO_PORTB_DATA_R = pattern;
+
+    if(digit == 0)
+    {
+        GPIO_PORTA_DATA_R |= 0x10;
+    }
+    else if(digit == 1)
+    {
+        GPIO_PORTA_DATA_R |= 0x20;
+    }
+    else if(digit == 2)
+    {
+        GPIO_PORTA_DATA_R |= 0x40;
+    }
+    else
+    {
+        GPIO_PORTA_DATA_R |= 0x80;
+    }
+
+    delay();
+
+    digitsOff();
+}
+
+/*=========================================================
+  RGB COLOUR
+  0 = OFF, 1 = RED, 2 = BLUE, 3 = GREEN, 4 = MAGENTA,
+  5 = YELLOW, 6 = CYAN, 7 = WHITE
+=========================================================*/
+void setColour(uint8_t colour)
+{
+    if(colour == 0)
+    {
+        GPIO_PORTF_DATA_R &= ~0x0E;
+    }
+    else if(colour == 1)
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x02;
+    }
+    else if(colour == 2)
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x04;
+    }
+    else if(colour == 3)
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x08;
+    }
+    else if(colour == 4)
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x06;
+    }
+    else if(colour == 5)
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x0A;
+    }
+    else if(colour == 6)
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x0C;
+    }
+    else
+    {
+        GPIO_PORTF_DATA_R =
+            (GPIO_PORTF_DATA_R & ~0x0E) | 0x0E;
+    }
+}
+
+/*=========================================================
+  NORMAL DISPLAY
+  Digit 1 = R/P, Digit 2 = colour, Digit 3 = speed, Digit 4 = S
+=========================================================*/
+void updateDisplay(uint8_t state,
+                   uint8_t colour,
+                   uint8_t speed)
+{
+    if(state == 0)
+    {
+        showDigit(0, SEG_R);
+    }
+    else
+    {
+        showDigit(0, SEG_P);
+    }
+
+    showDigit(1, digitCode[colour]);
+    showDigit(2, digitCode[speed]);
+    showDigit(3, SEG_S);
+}
+
+/*=========================================================
+  UART0 INITIALIZATION - 16 MHz clock, 115200 baud
+=========================================================*/
+void UART0_Init(void)
+{
+    SYSCTL_RCGCUART_R |= 0x01;
+    SYSCTL_RCGCGPIO_R |= 0x01;
+
+    while((SYSCTL_PRGPIO_R & 0x01) == 0)
+    {
+    }
+
+    GPIO_PORTA_AFSEL_R |= 0x03;
+    GPIO_PORTA_PCTL_R &= ~0xFF;
+    GPIO_PORTA_PCTL_R |= 0x11;
+    GPIO_PORTA_DEN_R |= 0x03;
+
+    UART0_CTL_R = 0;
+    UART0_IBRD_R = 8;
+    UART0_FBRD_R = 44;
+    UART0_LCRH_R = 0x70;
+    UART0_CTL_R = 0x301;
+}
+
+/*=========================================================
+  UART READ - blocks (busy-waits) until one character arrives
+=========================================================*/
+char UART0_Read(void)
+{
+    while(UART0_FR_R & 0x10)
+    {
+    }
+
+    return UART0_DR_R & 0xFF;
+}
+
+/*=========================================================
+  UART WRITE - blocks until there's room, then sends one char
+=========================================================*/
+void UART0_Write(char c)
+{
+    while(UART0_FR_R & 0x20)
+    {
+    }
+
+    UART0_DR_R = c;
+}
+
+/*=========================================================
+  UART STRING - sends a whole C string, char by char
+=========================================================*/
+void UART0_String(char *str)
+{
+    while(*str)
+    {
+        UART0_Write(*str);
+        str++;
+    }
+}
+
+/*=========================================================
+  PROCESS UART COMMAND
+  ---------------------------------------------------------
+  Takes one COMPLETE typed word (already Enter-terminated by
+  the caller in main()) and decides what to do with it.
+  strcmp(a, b) returns 0 when the two strings are IDENTICAL,
+  so "strcmp(word, "rate") == 0" reads as "word IS exactly
+  the text 'rate'".
+  colour/speed/state are passed as POINTERS so this function
+  can change main()'s real variables, not a throwaway copy.
+=========================================================*/
+void processCommand(char *word,
+                    uint8_t *colour,
+                    uint8_t *speed,
+                    uint8_t *state)
+{
+    if((strcmp(word, "color") == 0) || (strcmp(word, "colour") == 0))
+    {
+        /* step the colour forward by one, same wrap-around as SW2 */
+        (*colour)++;
+        if(*colour > 7)
+        {
+            *colour = 0;
+        }
+        UART0_String("\r\nColour incremented\r\n");
+    }
+    else if(strcmp(word, "rate") == 0)
+    {
+        /* step the speed forward by one, same wrap-around as SW1 */
+        (*speed)++;
+        if(*speed > 8)
+        {
+            *speed = 1;
+        }
+        UART0_String("\r\nRate incremented\r\n");
+    }
+    else if(strcmp(word, "t") == 0)
+    {
+        if(*state == 0)
+        {
+            *state = 1;
+            UART0_String("\r\nLED: CONTINUOUS ON\r\n");
+        }
+        else
+        {
+            *state = 0;
+            UART0_String("\r\nLED: BLINKING\r\n");
+        }
+    }
+    else if(strcmp(word, "h") == 0)
+    {
+        UART0_String(
+            "\r\n"
+            "============================\r\n"
+            "LAB 4 COMMANDS (type then Enter)\r\n"
+            "============================\r\n"
+            "color / colour = next colour\r\n"
+            "rate           = next speed\r\n"
+            "t              = BLINK/CONTINUOUS\r\n"
+            "h              = HELP\r\n"
+            "============================\r\n"
+        );
+    }
+    else
+    {
+        UART0_String("\r\nUnknown command\r\n");
+    }
+}
+
+/*=========================================================
+  MAIN
+=========================================================*/
+int main(void)
+{
+    uint8_t colour = 1;
+    uint8_t speed = 1;
+    uint8_t state = 0;
+    uint8_t ledState = 1;
+    uint8_t sw1;
+    uint8_t sw2;
+    uint8_t oldSW1 = 1;
+    uint8_t oldSW2 = 1;
+    uint32_t counter = 0;
+    uint32_t blinkCount;
+    char command;
+
+    /* --- typing buffer for whole-word UART commands ---
+       cmdBuffer is the "notepad" that keys get written onto
+       as you type; cmdIndex is "how many letters written so
+       far". Size 16 is plenty for words like "colour". */
+    char cmdBuffer[16];
+    uint8_t cmdIndex = 0;
+
+    /*=====================================================
+      ENABLE PORT F
+    =====================================================*/
+    SYSCTL_RCGCGPIO_R |= 0x20;
+    while((SYSCTL_PRGPIO_R & 0x20) == 0)
+    {
+    }
+
+    /*=====================================================
+      ENABLE PORT A
+    =====================================================*/
+    SYSCTL_RCGCGPIO_R |= 0x01;
+    while((SYSCTL_PRGPIO_R & 0x01) == 0)
+    {
+    }
+
+    /*=====================================================
+      ENABLE PORT B
+    =====================================================*/
+    SYSCTL_RCGCGPIO_R |= 0x02;
+    while((SYSCTL_PRGPIO_R & 0x02) == 0)
+    {
+    }
+
+    /*=====================================================
+      UNLOCK PF0
+    =====================================================*/
+    GPIO_PORTF_LOCK_R = 0x4C4F434B;
+    GPIO_PORTF_CR_R |= 0x01;
+
+    /*=====================================================
+      PORT F
+    =====================================================*/
+    GPIO_PORTF_DIR_R |= 0x0E;
+    GPIO_PORTF_DIR_R &= ~0x11;
+    GPIO_PORTF_DEN_R |= 0x1F;
+    GPIO_PORTF_PUR_R |= 0x11;
+
+    /*=====================================================
+      PORT A
+    =====================================================*/
+    GPIO_PORTA_DIR_R |= 0xF0;
+    GPIO_PORTA_DEN_R |= 0xF0;
+
+    /*=====================================================
+      PORT B
+    =====================================================*/
+    GPIO_PORTB_DIR_R |= 0xFF;
+    GPIO_PORTB_DEN_R |= 0xFF;
+
+    /*=====================================================
+      UART
+    =====================================================*/
+    UART0_Init();
+
+    UART0_String(
+        "\r\n"
+        "============================\r\n"
+        "           LAB 4\r\n"
+        "============================\r\n"
+        "SW1       : SPEED\r\n"
+        "SW2       : COLOUR\r\n"
+        "SW1+SW2   : RUN / PAUSE\r\n"
+        "\r\n"
+        "UART COMMANDS (type then Enter):\r\n"
+        "color / colour = next colour\r\n"
+        "rate           = next speed\r\n"
+        "t              = BLINK / CONTINUOUS\r\n"
+        "h              = HELP\r\n"
+        "============================\r\n"
+    );
+
+    setColour(colour);
+
+    /*=====================================================
+      MAIN LOOP
+    =====================================================*/
+    while(1)
+    {
+        /*=================================================
+          UART / LAPTOP INPUT
+          ---------------------------------------------
+          Instead of acting on every single key press, we
+          now BUILD UP a word in cmdBuffer as you type, and
+          only act once you press Enter ('\r' or '\n').
+
+          Example, typing "rate" then Enter:
+            key 'r' -> cmdBuffer = "r",    cmdIndex = 1
+            key 'a' -> cmdBuffer = "ra",   cmdIndex = 2
+            key 't' -> cmdBuffer = "rat",  cmdIndex = 3
+            key 'e' -> cmdBuffer = "rate", cmdIndex = 4
+            Enter    -> cmdBuffer[4] = '\0' (stamp the end),
+                        processCommand("rate", ...) runs,
+                        cmdIndex resets to 0 for the next word
+        =================================================*/
+        if((UART0_FR_R & 0x10) == 0)
+        {
+            command = UART0_Read();
+
+            if((command == '\r') || (command == '\n'))
+            {
+                if(cmdIndex > 0)
+                {
+                    cmdBuffer[cmdIndex] = '\0';   /* mark end of the typed word */
+
+                    processCommand(
+                        cmdBuffer,
+                        &colour,
+                        &speed,
+                        &state
+                    );
+
+                    counter = 0;
+                }
+
+                cmdIndex = 0;                      /* notepad wiped, ready for next word */
+                UART0_String("\r\n");
+            }
+            else if(cmdIndex < (sizeof(cmdBuffer) - 1))
+            {
+                cmdBuffer[cmdIndex] = command;      /* write this key onto the notepad */
+                cmdIndex++;
+                UART0_Write(command);               /* echo it back so you can see what you typed */
+            }
+            /* if the notepad is already full, extra characters
+               are simply ignored until Enter is pressed */
+        }
+
+        /*=================================================
+          PHYSICAL SW1 / SW2
+        =================================================*/
+        sw1 = GPIO_PORTF_DATA_R & 0x10;
+        sw2 = GPIO_PORTF_DATA_R & 0x01;
+
+        if((sw1 == 0) && (sw2 == 0))
+        {
+            if((oldSW1 != 0) || (oldSW2 != 0))
+            {
+                if(state == 0)
+                {
+                    state = 1;
+                }
+                else
+                {
+                    state = 0;
+                }
+
+                counter = 0;
+                delay();
+            }
+        }
+        else if((state == 0) &&
+                (sw1 == 0) &&
+                (oldSW1 != 0))
+        {
+            speed++;
+            if(speed > 8)
+            {
+                speed = 1;
+            }
+            delay();
+        }
+        else if((state == 0) &&
+                (sw2 == 0) &&
+                (oldSW2 != 0))
+        {
+            colour++;
+            if(colour > 7)
+            {
+                colour = 0;
+            }
+            delay();
+        }
+
+        oldSW1 = sw1;
+        oldSW2 = sw2;
+
+        /*=================================================
+          SPEED SETTINGS
+        =================================================*/
+        if(speed == 1)
+        {
+            blinkCount = 160;
+        }
+        else if(speed == 2)
+        {
+            blinkCount = 130;
+        }
+        else if(speed == 3)
+        {
+            blinkCount = 100;
+        }
+        else if(speed == 4)
+        {
+            blinkCount = 80;
+        }
+        else if(speed == 5)
+        {
+            blinkCount = 60;
+        }
+        else if(speed == 6)
+        {
+            blinkCount = 45;
+        }
+        else if(speed == 7)
+        {
+            blinkCount = 30;
+        }
+        else
+        {
+            blinkCount = 15;
+        }
+
+        /*=================================================
+          RGB LED CONTROL
+        =================================================*/
+        if(state == 0)
+        {
+            if(counter >= blinkCount)
+            {
+                counter = 0;
+                if(ledState == 0)
+                {
+                    ledState = 1;
+                }
+                else
+                {
+                    ledState = 0;
+                }
+            }
+
+            if(ledState == 1)
+            {
+                setColour(colour);
+            }
+            else
+            {
+                GPIO_PORTF_DATA_R &= ~0x0E;
+            }
+        }
+        else
+        {
+            setColour(colour);
+            ledState = 1;
+        }
+
+        /*=================================================
+          7-SEGMENT DISPLAY
+        =================================================*/
+        updateDisplay(
+            state,
+            colour,
+            speed
+        );
+
+        counter++;
+    }
+}
+
