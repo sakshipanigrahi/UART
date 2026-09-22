@@ -126,7 +126,7 @@ Unknown command
 ## 5. How to Run It
 
 1. Build the program and load it onto the board, the same way you did for Lab 3.
-2. On the laptop, open a serial terminal program (like PuTTY or Tera Term) and connect to the board's COM port.
+2. Connect to the board's COM port.
 3. Set the speed to 115200, with 8 data bits, no parity, 1 stop bit.
 4. Press reset on the board. The menu above will appear on the screen.
 5. You can now use the buttons, or type the words above, to control the LED.
